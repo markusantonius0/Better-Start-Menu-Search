@@ -3,7 +3,7 @@
     Creates the GitHub repository "Better Start Menu Search" and pushes this project.
 #>
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 $gitPath = "C:\Program Files\Git\cmd"
 $ghPath  = "C:\Program Files\GitHub CLI"
@@ -28,8 +28,8 @@ Write-Host "  [OK] Local repository ready." -ForegroundColor Green
 
 # 2. Check GitHub CLI authentication
 Write-Host "`n> Checking GitHub authentication..." -ForegroundColor Cyan
-$authCheck = gh auth status 2>&1 | Out-String
 
+cmd.exe /c "gh auth status >nul 2>&1"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  [!] You need to authenticate with GitHub once." -ForegroundColor Yellow
     Write-Host "  A browser window will open to authorize GitHub CLI..." -ForegroundColor Yellow
@@ -53,11 +53,13 @@ if ($remotes -contains "origin") {
 }
 
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "`n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+    Write-Host "`n============================================================" -ForegroundColor DarkGray
     Write-Host "  Successfully published to GitHub!" -ForegroundColor Green
-    $repoUrl = gh repo view --json url -q .url
-    Write-Host "  Repo URL: $repoUrl" -ForegroundColor Cyan
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+    $repoUrl = gh repo view --json url -q .url 2>$null
+    if ($repoUrl) {
+        Write-Host "  Repo URL: $repoUrl" -ForegroundColor Cyan
+    }
+    Write-Host "============================================================" -ForegroundColor DarkGray
 } else {
     Write-Error "Failed to create or push repository."
 }
