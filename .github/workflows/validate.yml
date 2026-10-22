@@ -63,9 +63,8 @@ jobs:
               throw "AutoHotkey v2 executable was not found in the standard install locations."
           }
 
-          $output = & $ahk /validate "PowerToys_StartSearch.ahk" 2>&1
-          $output | ForEach-Object { Write-Host $_ }
-          if ($LASTEXITCODE -ne 0) {
-              throw "AutoHotkey validation failed with exit code $LASTEXITCODE."
+          $validateProc = Start-Process -FilePath $ahk -ArgumentList '/validate "PowerToys_StartSearch.ahk"' -PassThru -Wait -NoNewWindow
+          if ($validateProc.ExitCode -ne 0) {
+              throw "AutoHotkey validation failed with exit code $($validateProc.ExitCode)."
           }
           Write-Host "✓ PowerToys_StartSearch.ahk syntax OK"
