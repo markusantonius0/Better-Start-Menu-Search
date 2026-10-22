@@ -17,6 +17,19 @@ jobs:
         run: |
           winget install --id AutoHotkey.AutoHotkey --accept-source-agreements --accept-package-agreements --silent
 
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress --yes
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $outputDirectory = Join-Path $env:GITHUB_WORKSPACE "dist"
+          New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+          & iscc "/DMyAppVersion=0.0.0" "/O$outputDirectory" "installer\CmdPalStartSearch.iss"
+          if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+          }
+
       - name: Validate PowerShell Scripts
         shell: pwsh
         run: |
