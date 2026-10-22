@@ -1,0 +1,41 @@
+name: Validate Scripts
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install AutoHotkey v2
+        run: |
+          winget install --id AutoHotkey.AutoHotkey --accept-source-agreements --accept-package-agreements --silent
+
+      - name: Validate PowerShell Scripts
+        shell: pwsh
+        run: |
+          $scripts = @("Setup.ps1", "Uninstall.ps1")
+          foreach ($s in $scripts) {
+              $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content $s -Raw), [ref]$null)
+              Write-Host "✓ $s syntax OK"
+          }
+
+      - name: Validate AutoHotkey Script
+        shell: pwsh
+        run: |
+          $ahk = "C:\Users\runneradmin\AppData\Local\Programs\AutoHotkey\v2\AutoHotkey64.exe"
+          if (-not (Test-Path $ahk)) {
+              $ahk = "C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe"
+          }
+          & $ahk /validate "PowerToys_StartSearch.ahk"
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "AHK validation failed"
+              exit 1
+          }
+          Write-Host "✓ PowerToys_StartSearch.ahk syntax OK"

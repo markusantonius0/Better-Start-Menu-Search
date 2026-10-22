@@ -1,0 +1,22 @@
+# Editor / IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# AutoHotkey compiled
+*.exe
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Logs
+*.log
+
+# Temp / scratch
+scratch/
+*.tmp
+*.bak
