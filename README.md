@@ -22,6 +22,15 @@ Press the **Windows key** to open the Start Menu like normal. The moment you **s
 
 ## Quick Start
 
+### WinGet (after package publication)
+The installer is being prepared for publication to the WinGet community repository. Once the manifest is accepted, install it with:
+
+```powershell
+winget install --id MarkusAntonius0.BetterStartMenuSearch --exact
+```
+
+Until then, use one of the manual installation options below.
+
 ### Option A: Double-Click (Easiest)
 Download or clone the repository, then simply double-click **`Setup.bat`**.
 
@@ -55,6 +64,18 @@ powershell -ExecutionPolicy Bypass -File Uninstall.ps1
 ```
 
 This stops the background script and removes the startup shortcut. PowerToys and AutoHotkey are **not** uninstalled. Run `Setup.ps1` again at any time to re-enable.
+
+When installed through WinGet, the package uninstaller stops the integration and removes its startup shortcut and installed files. It does not uninstall PowerToys or AutoHotkey.
+
+## Building a release installer
+
+The Inno Setup installer installs per-user under `%LOCALAPPDATA%\Programs\CmdPalStartSearch`, then runs `Setup.ps1` to configure and launch the integration. It supports Inno Setup's silent switches used by WinGet (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-`). Uninstalling runs `Uninstall.ps1` before removing the installed files. The existing manual setup and uninstall scripts remain available.
+
+To publish a versioned installer, merge the installer changes and push a `vMAJOR.MINOR.PATCH` tag (for example, `v1.0.0`). The release workflow builds and attaches `BetterStartMenuSearch-Setup-MAJOR.MINOR.PATCH.exe` to the GitHub release. For `v1.0.0`, the stable download URL will be:
+
+`https://github.com/markusantonius0/Better-Start-Menu-Search/releases/download/v1.0.0/BetterStartMenuSearch-Setup-1.0.0.exe`
+
+Before submitting the WinGet manifest, download that exact asset and calculate its SHA-256 with `Get-FileHash .\BetterStartMenuSearch-Setup-1.0.0.exe -Algorithm SHA256`. Use the release URL and hash in an `Inno` installer manifest, then submit it to `microsoft/winget-pkgs`. The package ID above is the proposed manifest identifier.
 
 ## How It Works
 
@@ -98,9 +119,11 @@ All prerequisites are installed automatically by `Setup.ps1` via [winget](https:
 | `Setup.ps1` | One-click installer (prerequisites + startup + launch) |
 | `Uninstall.bat` | Double-click launcher for `Uninstall.ps1` |
 | `Uninstall.ps1` | Stops the script and removes the startup shortcut |
+| `installer/CmdPalStartSearch.iss` | Per-user Inno Setup package definition for WinGet |
 | `LICENSE` | MIT License |
 | `.gitignore` | Ignores temporary and local workspace files |
 | `.github/workflows/validate.yml` | GitHub Actions CI for automated script validation |
+| `.github/workflows/release.yml` | Builds and attaches versioned installers to tagged GitHub releases |
 
 ## FAQ
 
