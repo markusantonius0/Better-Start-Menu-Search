@@ -75,6 +75,16 @@ jobs:
           & iscc "/DMyAppVersion=0.0.0" "/O$out" "installer\CmdPalStartSearch.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Generate and validate WinGet manifests
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist\BetterStartMenuSearch-Setup-*.exe | Select-Object -First 1
+          .\winget\New-WingetManifests.ps1 -Version 0.0.0 -InstallerPath $exe.FullName
+          $dir = "winget\manifests\m\MarkusAntonius0\BetterStartMenuSearch\0.0.0"
+          Get-ChildItem $dir | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName }
+          winget validate --manifest $dir --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { throw "winget validate failed ($LASTEXITCODE)" }
+
       - name: Silent install (WinGet switches)
         shell: pwsh
         run: |

@@ -24,3 +24,6 @@ scratch/
 # Local settings written by Setup.ps1
 settings.ini
 dist/
+
+# Generated WinGet manifests (copied into a winget-pkgs fork, not committed here)
+winget/manifests/
