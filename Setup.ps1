@@ -71,10 +71,11 @@ function Find-PowerToysExe {
     }
     $candidates = @(
         (Join-Path $env:LOCALAPPDATA "PowerToys\PowerToys.exe"),
-        (Join-Path $env:ProgramFiles "PowerToys\PowerToys.exe")
+        (Join-Path $env:ProgramFiles "PowerToys\PowerToys.exe"),
+        $(if ($env:ProgramW6432) { Join-Path $env:ProgramW6432 "PowerToys\PowerToys.exe" })
     )
     foreach ($c in $candidates) {
-        if (Test-Path $c) { return $c }
+        if ($c -and (Test-Path $c)) { return $c }
     }
     return $null
 }
@@ -204,13 +205,33 @@ if (Test-Path $ptSettingsPath) {
 Write-Step "Checking for AutoHotkey v2"
 
 function Find-AHKv2 {
-    $roots = @(
-        (Join-Path $env:LOCALAPPDATA "Programs\AutoHotkey\v2"),
-        (Join-Path $env:ProgramFiles "AutoHotkey\v2")
-    )
-    if (${env:ProgramFiles(x86)}) {
-        $roots += (Join-Path ${env:ProgramFiles(x86)} "AutoHotkey\v2")
+    $roots = New-Object System.Collections.Generic.List[string]
+
+    # Install folder recorded by the AutoHotkey installer. Read the 64-bit
+    # registry view explicitly: this script may run in 32-bit PowerShell
+    # (e.g. launched by a 32-bit installer), where the default view differs.
+    foreach ($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryHive]::LocalMachine)) {
+        foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
+            try {
+                $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, $view)
+                $key  = $base.OpenSubKey("SOFTWARE\AutoHotkey")
+                if ($key) {
+                    $dir = $key.GetValue("InstallDir")
+                    if ($dir) { $roots.Add((Join-Path $dir "v2")); $roots.Add([string]$dir) }
+                    $key.Close()
+                }
+                $base.Close()
+            } catch { }
+        }
     }
+
+    # Default install locations. In 32-bit PowerShell $env:ProgramFiles is
+    # "Program Files (x86)", so also check ProgramW6432 (the real 64-bit one).
+    $roots.Add((Join-Path $env:LOCALAPPDATA "Programs\AutoHotkey\v2"))
+    foreach ($pf in @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ($pf) { $roots.Add((Join-Path $pf "AutoHotkey\v2")) }
+    }
+
     $exeNames = if ([Environment]::Is64BitOperatingSystem) {
         @("AutoHotkey64.exe", "AutoHotkey32.exe")
     } else {

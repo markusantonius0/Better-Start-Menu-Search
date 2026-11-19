@@ -15,6 +15,10 @@ DefaultDirName={localappdata}\Programs\CmdPalStartSearch
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+; 64-bit mode so {sys} is the real System32 and Setup.ps1 runs in 64-bit
+; PowerShell (32-bit PowerShell sees "Program Files (x86)" as Program Files)
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 OutputBaseFilename=BetterStartMenuSearch-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
