@@ -20,3 +20,6 @@ $RECYCLE.BIN/
 scratch/
 *.tmp
 *.bak
+
+# Local settings written by Setup.ps1
+settings.ini

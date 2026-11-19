@@ -42,7 +42,7 @@ The installer will:
 3. ✅ Enable **Command Palette** in PowerToys settings
 4. ✅ Disable legacy **PowerToys Run** (avoids hotkey conflicts)
 5. ✅ Install **AutoHotkey v2** if missing (via winget)
-6. ✅ Detect your Command Palette hotkey and sync the script
+6. ✅ Detect your Command Palette hotkey and save it to `settings.ini`
 7. ✅ Register a **startup shortcut** so it runs on every login
 8. ✅ Launch immediately
 
@@ -64,7 +64,7 @@ A lightweight [AutoHotkey v2](https://www.autohotkey.com/) script runs in the ba
 User presses Win          → Start Menu opens normally
 User types a character    → AHK intercepts the keystroke
                           → Sends Escape to dismiss Start Menu
-                          → Sends Win+Alt+Space to open Command Palette
+                          → Sends your CmdPal hotkey (default Win+Alt+Space)
                           → Buffers any fast-typed characters during the switch
                           → Sends all buffered text into CmdPal's search box
 ```
@@ -98,6 +98,7 @@ All prerequisites are installed automatically by `Setup.ps1` via [winget](https:
 | `Setup.ps1` | One-click installer (prerequisites + startup + launch) |
 | `Uninstall.bat` | Double-click launcher for `Uninstall.ps1` |
 | `Uninstall.ps1` | Stops the script and removes the startup shortcut |
+| `settings.ini` | Created by `Setup.ps1`: your Command Palette hotkey (not committed) |
 | `LICENSE` | MIT License |
 | `.gitignore` | Ignores temporary and local workspace files |
 | `.github/workflows/validate.yml` | GitHub Actions CI for automated script validation |
@@ -111,7 +112,10 @@ No. It's a user-space script that intercepts keystrokes only when the Start Menu
 No. The hotkeys are context-sensitive — they only activate when the Start Menu or Windows Search is the active window.
 
 **Q: What if I change my Command Palette hotkey?**
-Re-run `Setup.ps1` — it reads your CmdPal settings and patches the script automatically.
+Re-run `Setup.ps1` — it reads your CmdPal settings and writes the hotkey to `settings.ini`, which the script reads at startup.
+
+**Q: I typed in Start but nothing happened / Windows Search opened instead.**
+Command Palette didn't open in time. Make sure PowerToys is running and Command Palette is enabled (PowerToys Settings → Command Palette), then re-run `Setup.ps1` so the script uses your current CmdPal hotkey. When this happens the script shows a notification and passes your text to Windows Search, so no keystrokes are lost.
 
 **Q: Does it work with the Win key held for other shortcuts?**
 Yes. Only single keypresses while the Start Menu is open are intercepted. Holding `Win` and pressing `E`, `D`, `L`, etc. works exactly as before.

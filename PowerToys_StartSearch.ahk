@@ -10,14 +10,29 @@ Persistent()
 ; Workflow:
 ; 1. Pressing Win opens the Windows Start Menu normally for pinned apps & power.
 ; 2. As soon as you type any character or paste, the Start Menu dismisses,
-;    PowerToys Command Palette (Win + Alt + Space) is summoned, and your typed
-;    text is seamlessly entered into the Command Palette search field.
+;    PowerToys Command Palette is summoned, and your typed text is entered
+;    into the Command Palette search field.
 ; 3. Win + S and Win + Q directly invoke Command Palette.
+;
+; NOTE: Keep this file ASCII-only. Windows PowerShell 5.1 and some editors
+; mangle non-ASCII characters when the file is read without a BOM.
 ; ==============================================================================
+
+; --- Configuration -------------------------------------------------------------
+
+; CmdPal hotkey in AutoHotkey Send syntax. Setup.ps1 detects your configured
+; Command Palette hotkey and writes it to settings.ini next to this script.
+; Default: Win + Alt + Space.
+global CmdPalHotkey := IniRead(A_ScriptDir "\settings.ini", "CmdPal", "Hotkey", "!#{Space}")
+global CmdPalWindow := "ahk_exe Microsoft.CmdPal.UI.exe"
+
+; Set while a handoff is running so that keys typed during the transition are
+; buffered by the InputHook instead of re-triggering the handoff hotkeys.
+global HandoffActive := false
 
 A_IconTip := "PowerToys Command Palette - Start Search"
 
-; --- System Tray Configuration ---
+; --- System Tray Configuration ------------------------------------------------
 Tray := A_TrayMenu
 Tray.Delete()
 Tray.Add("PowerToys Start Search (Active)", (*) => 0)
@@ -31,55 +46,49 @@ ToggleSuspend(*) {
     Suspend -1
     if A_IsSuspended {
         Tray.Check("Suspend / Resume")
-        Tray.Tip := "PowerToys Command Palette - Start Search (Suspended)"
+        A_IconTip := "PowerToys Command Palette - Start Search (Suspended)"
     } else {
         Tray.Uncheck("Suspend / Resume")
-        Tray.Tip := "PowerToys Command Palette - Start Search"
+        A_IconTip := "PowerToys Command Palette - Start Search"
     }
 }
 
 ; Check whether the Start Menu or Search Host currently has focus
 IsStartOrSearchActive(*) {
-    return WinActive("ahk_exe StartMenuExperienceHost.exe") 
+    if HandoffActive
+        return false
+    return WinActive("ahk_exe StartMenuExperienceHost.exe")
         || WinActive("ahk_exe SearchHost.exe")
 }
 
 ; Summon PowerToys Command Palette
 SummonCmdPal(*) {
-    SendInput "!#{Space}" ; CmdPal hotkey â€” patched by Setup.ps1
+    SendInput CmdPalHotkey
 }
 
-; Resolve key name / shift state to the appropriate character
+; Resolve a hotkey name (e.g. "a", "+a", "Space", "Numpad5") to the character
+; it would normally type (US layout for shifted symbols).
 ResolveKeyToChar(key) {
-    if (key == "Space")
+    if (key == "Space" || key == "+Space")
         return " "
-    
+
     ; Numpad keys
     if (SubStr(key, 1, 6) == "Numpad") {
         suffix := SubStr(key, 7)
         if (suffix ~= "^\d$")
             return suffix
-        if (suffix == "Dot")
-            return "."
-        if (suffix == "Div")
-            return "/"
-        if (suffix == "Mult")
-            return "*"
-        if (suffix == "Add")
-            return "+"
-        if (suffix == "Sub")
-            return "-"
-        return ""
+        static numpadMap := Map("Dot", ".", "Div", "/", "Mult", "*", "Add", "+", "Sub", "-")
+        return numpadMap.Has(suffix) ? numpadMap[suffix] : ""
     }
 
     ; Shifted keys
-    if (SubStr(key, 1, 1) == "+") {
+    if (StrLen(key) == 2 && SubStr(key, 1, 1) == "+") {
         base := SubStr(key, 2)
         if (base ~= "^[a-zA-Z]$") {
-            ; Check CapsLock state for inversion
+            ; CapsLock inverts Shift for letters
             return GetKeyState("CapsLock", "T") ? StrLower(base) : StrUpper(base)
         }
-        
+
         static shiftMap := Map(
             "1", "!", "2", "@", "3", "#", "4", "$", "5", "%",
             "6", "^", "7", "&", "8", "*", "9", "(", "0", ")",
@@ -87,79 +96,89 @@ ResolveKeyToChar(key) {
             ";", ":", "'", '"', ",", "<", ".", ">", "/", "?",
             "``", "~"
         )
-        if shiftMap.Has(base)
-            return shiftMap[base]
-        return base
+        return shiftMap.Has(base) ? shiftMap[base] : base
     }
 
     ; Unshifted letters
-    if (key ~= "^[a-zA-Z]$") {
+    if (key ~= "^[a-zA-Z]$")
         return GetKeyState("CapsLock", "T") ? StrUpper(key) : StrLower(key)
-    }
 
     return key
 }
 
-; Wait for Command Palette window to appear and its search box to gain focus.
-; WinUI3 apps need extra time for the XAML tree to initialize after the window
-; becomes "active" â€” the search TextBox isn't focusable immediately.
+; Wait for the Command Palette window to become active. Returns true if it did.
 WaitForCmdPalReady() {
-    ; Phase 1: Wait for the window itself (up to 500ms)
-    loop 25 {
-        if WinActive("ahk_exe Microsoft.CmdPal.UI.exe")
-            break
-        Sleep 20
-    }
+    ; CmdPal can take a while on its first (cold) launch.
+    if !WinWaitActive(CmdPalWindow, , 2)
+        return false
 
-    ; Phase 2: Give the WinUI3 XAML tree time to fully render and auto-focus
-    ; the search box. CmdPal has "HighlightSearchOnActivate: true" which means
-    ; it will focus the search box, but it needs the render cycle to complete.
+    ; Give the WinUI3 XAML tree time to render and auto-focus the search box.
     Sleep 150
-
-    ; Phase 3: As a safety net, send Tab then Shift+Tab to force-cycle focus
-    ; back to the search box in case XAML auto-focus didn't fire.
-    SendInput "{Tab}{Shift down}{Tab}{Shift up}"
-    Sleep 30
+    return true
 }
 
-; Handoff sequence: closes Start Menu, opens Command Palette, sends typed query
-HandoffToCmdPal(firstKey) {
-    ; 1. Start an input hook to capture any fast keystrokes typed during transition
-    ih := InputHook("T0.6") ; Max 600ms buffer timeout (matches longer wait)
-    ih.VisibleNonText := false
-    ih.KeyOpt("{All}", "N")  ; Intercept and buffer all keys
-    ih.Start()
+; Close Start, open Command Palette, and send the query.
+;   text  - text to type into Command Palette
+;   paste - if true, paste the clipboard instead of typing text
+Handoff(text, paste := false) {
+    global HandoffActive
+    if HandoffActive
+        return
+    HandoffActive := true
 
-    ; 2. Dismiss Start Menu / Windows Search
-    SendInput "{Escape}"
-    Sleep 30
+    try {
+        ; 1. Buffer keystrokes typed during the transition. MinSendLevel 1
+        ;    ignores this script's own Escape / CmdPal hotkey sends while
+        ;    still capturing everything the user physically types.
+        ih := InputHook("T5")
+        ih.MinSendLevel := 1
+        ih.VisibleNonText := false
+        ih.KeyOpt("{Enter}{NumpadEnter}{Escape}", "E")  ; replayed afterwards
+        ih.Start()
 
-    ; 3. Summon Command Palette (Win + Alt + Space)
-    SummonCmdPal()
+        ; 2. Dismiss Start Menu / Windows Search
+        SendInput "{Escape}"
+        Sleep 50
 
-    ; 4. Wait for Command Palette to be ready with search box focused
-    WaitForCmdPalReady()
+        ; 3. Summon Command Palette
+        SummonCmdPal()
+        ready := WaitForCmdPalReady()
 
-    ; 5. Stop the buffer and collect any characters typed during the switch
-    ih.Stop()
-    bufferedInput := ih.Input
+        ; 4. Collect anything typed in the meantime
+        ih.Stop()
+        if !paste
+            text .= ih.Input
+        endKey := (ih.EndReason == "EndKey") ? ih.EndKey : ""
 
-    ; 6. Send the initial character followed by buffered input
-    initialChar := ResolveKeyToChar(firstKey)
-    fullText := initialChar . bufferedInput
+        if !ready {
+            ; Command Palette didn't open (PowerToys not running, CmdPal
+            ; disabled, or hotkey mismatch). Fall back to Windows Search so
+            ; the user's keystrokes are not lost.
+            TrayTip "Command Palette did not open. Is PowerToys running with Command Palette enabled?", "PowerToys Start Search", "Iconx"
+            SendInput "{LWin}"
+            WinWaitActive("ahk_exe SearchHost.exe", , 1)
+            Sleep 100
+        }
 
-    if (fullText != "") {
-        SendText fullText
+        ; 5. Send the query
+        if paste
+            SendInput "^v"
+        else if (text != "")
+            SendText text
+
+        if (endKey != "")
+            SendInput "{" endKey "}"
+    } finally {
+        HandoffActive := false
     }
 }
 
-; Direct paste handoff (Ctrl + V while Start is open)
+HandoffTyped(thisHotkey) {
+    Handoff(ResolveKeyToChar(thisHotkey))
+}
+
 HandoffPaste(*) {
-    SendInput "{Escape}"
-    Sleep 30
-    SummonCmdPal()
-    WaitForCmdPalReady()
-    SendInput "^v"
+    Handoff("", true)
 }
 
 ; ==============================================================================
@@ -173,10 +192,10 @@ Hotkey "#q", SummonCmdPal
 ; Conditional hotkeys for Start Menu / Search typing
 HotIf IsStartOrSearchActive
 
-; Register Ctrl+V for paste handoff
+; Ctrl+V pastes the clipboard into Command Palette
 Hotkey "^v", HandoffPaste
 
-; Register keys for typing handoff
+; Keys that start a typing handoff
 keys := [
     "a","b","c","d","e","f","g","h","i","j","k","l","m",
     "n","o","p","q","r","s","t","u","v","w","x","y","z",
@@ -189,10 +208,11 @@ keys := [
 ]
 
 for k in keys {
-    Hotkey k, HandoffToCmdPal
-    if (StrLen(k) == 1 && SubStr(k, 1, 6) != "Numpad") {
-        Hotkey "+" . k, HandoffToCmdPal
-    }
+    ; try: some symbol keys don't exist on non-US keyboard layouts, and an
+    ; invalid key name would otherwise abort the whole script at startup.
+    try Hotkey k, HandoffTyped
+    if (StrLen(k) == 1)
+        try Hotkey "+" k, HandoffTyped
 }
 
 HotIf

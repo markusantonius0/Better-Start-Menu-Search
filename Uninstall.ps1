@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    CmdPal Start Search — Uninstaller.
+    CmdPal Start Search - Uninstaller.
 
     Stops the running interceptor, removes the startup shortcut, and restores
     Windows default search behavior.
 
 .DESCRIPTION
-    This does NOT uninstall PowerToys or AutoHotkey — only the CmdPal Start
+    This does NOT uninstall PowerToys or AutoHotkey - only the CmdPal Start
     Search integration. Run Setup.ps1 again at any time to reinstall.
 #>
 
@@ -22,7 +22,7 @@ function Write-Step  { param([string]$msg) Write-Host "`n> $msg" -ForegroundColo
 function Write-OK    { param([string]$msg) Write-Host "  [OK] $msg" -ForegroundColor Green }
 function Write-Skip  { param([string]$msg) Write-Host "  [--] $msg" -ForegroundColor DarkGray }
 
-# ── 1. Stop running instances ─────────────────────────────────────────────────
+# -- 1. Stop running instances ------------------------------------------------------------
 
 Write-Step "Stopping CmdPal Start Search"
 
@@ -38,7 +38,7 @@ if ($processes) {
     Write-Skip "No running instances found"
 }
 
-# ── 2. Remove startup shortcut ───────────────────────────────────────────────
+# -- 2. Remove startup shortcut ------------------------------------------------------------
 
 if (-not $KeepStartup) {
     Write-Step "Removing startup shortcut"
@@ -65,7 +65,7 @@ if (-not $KeepStartup) {
     Write-Skip "Keeping startup shortcut (-KeepStartup was specified)"
 }
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# -- Done ------------------------------------------------------------
 
 Write-Host ""
 Write-Host "  Uninstall complete." -ForegroundColor Green

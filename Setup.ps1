@@ -15,6 +15,7 @@
 .NOTES
     Run from an *elevated* (Admin) PowerShell if winget installs are needed.
     After the first run, no elevation is required.
+    Keep this file ASCII-only (Windows PowerShell 5.1 reads BOM-less files as ANSI).
 #>
 
 [CmdletBinding()]
@@ -38,52 +39,96 @@ function Test-CommandExists {
     $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+# Run a native command without letting stderr output become a terminating
+# NativeCommandError (Windows PowerShell 5.1 + $ErrorActionPreference=Stop).
+function Invoke-Native {
+    param([scriptblock]$Command)
+    $oldPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $Command } finally { $ErrorActionPreference = $oldPref }
+}
+
+# Safely read a property under StrictMode (returns $null if missing)
+function Get-Prop {
+    param($Object, [string]$Name)
+    if ($null -ne $Object -and $Object.PSObject.Properties[$Name]) { return $Object.$Name }
+    return $null
+}
+
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Text)
+    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Find-PowerToysExe {
+    $running = Get-Process PowerToys -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($running) {
+        try { if ($running.Path) { return $running.Path } } catch { }
+    }
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "PowerToys\PowerToys.exe"),
+        (Join-Path $env:ProgramFiles "PowerToys\PowerToys.exe")
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    return $null
+}
+
 # -- 1. Verify winget -------------------------------------------------------
 
 Write-Step "Checking for winget (Windows Package Manager)"
 
-if (-not (Test-CommandExists winget)) {
-    Write-Error @"
-winget is not available on this system.
-Please install 'App Installer' from the Microsoft Store, or update Windows to
-a recent build of Windows 10/11 that includes winget, then re-run this script.
-"@
-    exit 1
+$hasWinget = Test-CommandExists winget
+if ($hasWinget) {
+    Write-OK "winget found"
+} else {
+    Write-Warn "winget not found - prerequisites cannot be installed automatically."
 }
-Write-OK "winget found"
 
 # -- 2. PowerToys -----------------------------------------------------------
 
 Write-Step "Checking for Microsoft PowerToys"
 
-$ptProcess = Get-Process PowerToys -ErrorAction SilentlyContinue
-$ptInstalled = $null -ne $ptProcess
+$ptExe = Find-PowerToysExe
+$ptInstalled = $null -ne $ptExe
 
-if (-not $ptInstalled) {
-    $wingetList = winget list Microsoft.PowerToys 2>&1 | Out-String
-    if ($wingetList -match "Microsoft.PowerToys") {
+if (-not $ptInstalled -and $hasWinget) {
+    $wingetList = Invoke-Native { winget list --id Microsoft.PowerToys --exact --accept-source-agreements 2>&1 } | Out-String
+    if ($wingetList -match "Microsoft\.PowerToys") {
         $ptInstalled = $true
     }
 }
 
 if (-not $ptInstalled) {
+    if (-not $hasWinget) {
+        Write-Error @"
+PowerToys is not installed and winget is not available.
+Install PowerToys from https://aka.ms/installpowertoys (or install 'App Installer'
+from the Microsoft Store to get winget), then re-run this script.
+"@
+    }
     Write-Host "  Installing PowerToys via winget..." -ForegroundColor Yellow
-    winget install --id Microsoft.PowerToys --accept-source-agreements --accept-package-agreements --silent
+    Invoke-Native { winget install --id Microsoft.PowerToys --exact --accept-source-agreements --accept-package-agreements --silent }
     if ($LASTEXITCODE -ne 0) {
         Write-Error "PowerToys installation failed (exit code $LASTEXITCODE). Try running this script as Administrator."
-        exit 1
     }
     Write-OK "PowerToys installed"
-    Write-Warn "PowerToys needs to be launched once before Command Palette is available."
-
-    $ptExe = Join-Path $env:LOCALAPPDATA "PowerToys\PowerToys.exe"
-    if (Test-Path $ptExe) {
-        Start-Process $ptExe
-        Write-OK "PowerToys launched - please wait a moment and re-run Setup.ps1"
-    }
-    exit 0
+    $ptExe = Find-PowerToysExe
 } else {
     Write-OK "PowerToys is installed"
+}
+
+# PowerToys must be running for Command Palette to be available, and it
+# creates its settings file on first launch.
+if (-not (Get-Process PowerToys -ErrorAction SilentlyContinue)) {
+    if ($ptExe) {
+        Write-Host "  Starting PowerToys..." -ForegroundColor Yellow
+        Start-Process $ptExe
+        Write-OK "PowerToys started"
+    } else {
+        Write-Warn "PowerToys is installed but PowerToys.exe was not found. Please start PowerToys manually."
+    }
 }
 
 # -- 3. Enable Command Palette in PowerToys ---------------------------------
@@ -92,37 +137,62 @@ Write-Step "Ensuring Command Palette (CmdPal) is enabled in PowerToys"
 
 $ptSettingsPath = Join-Path $env:LOCALAPPDATA "Microsoft\PowerToys\settings.json"
 
-if (Test-Path $ptSettingsPath) {
-    $ptSettings = Get-Content $ptSettingsPath -Raw | ConvertFrom-Json
+# On a fresh install PowerToys writes its settings shortly after first launch
+for ($i = 0; $i -lt 30 -and -not (Test-Path $ptSettingsPath); $i++) {
+    Start-Sleep -Seconds 1
+}
 
+if (Test-Path $ptSettingsPath) {
+    $ptSettings = Get-Content $ptSettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+    if (-not (Get-Prop $ptSettings "enabled")) {
+        $ptSettings | Add-Member -NotePropertyName "enabled" -NotePropertyValue ([pscustomobject]@{})
+    }
+    $enabled = $ptSettings.enabled
     $changed = $false
 
-    if ($ptSettings.enabled.PSObject.Properties["CmdPal"]) {
-        if (-not $ptSettings.enabled.CmdPal) {
-            $ptSettings.enabled.CmdPal = $true
+    if ($enabled.PSObject.Properties["CmdPal"]) {
+        if (-not $enabled.CmdPal) {
+            $enabled.CmdPal = $true
             $changed = $true
             Write-OK "Enabled Command Palette"
         } else {
             Write-Skip "Command Palette already enabled"
         }
     } else {
-        $ptSettings.enabled | Add-Member -NotePropertyName "CmdPal" -NotePropertyValue $true
+        $enabled | Add-Member -NotePropertyName "CmdPal" -NotePropertyValue $true
         $changed = $true
         Write-OK "Added and enabled Command Palette"
     }
 
-    if ($ptSettings.enabled.PSObject.Properties["PowerToys Run"] -and $ptSettings.enabled."PowerToys Run") {
-        $ptSettings.enabled."PowerToys Run" = $false
+    if ($enabled.PSObject.Properties["PowerToys Run"] -and $enabled."PowerToys Run") {
+        $enabled."PowerToys Run" = $false
         $changed = $true
         Write-Warn "Disabled legacy PowerToys Run to avoid hotkey conflicts"
     }
 
     if ($changed) {
-        $ptSettings | ConvertTo-Json -Depth 10 | Set-Content $ptSettingsPath -Encoding UTF8
+        # PowerToys only reads settings.json at startup (and may overwrite it
+        # while running), so stop it, write the change, then start it again.
+        $ptProc = Get-Process PowerToys -ErrorAction SilentlyContinue
+        if ($ptProc) {
+            $ptProc | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+        }
+
+        Write-Utf8NoBom -Path $ptSettingsPath -Text ($ptSettings | ConvertTo-Json -Depth 20)
         Write-OK "PowerToys settings updated"
+
+        if ($ptExe) {
+            Start-Process $ptExe
+            Write-OK "PowerToys restarted to apply settings"
+            Start-Sleep -Seconds 3
+        } else {
+            Write-Warn "Please restart PowerToys to apply the new settings."
+        }
     }
 } else {
-    Write-Warn "PowerToys settings file not found - launch PowerToys once, then re-run this script."
+    Write-Warn "PowerToys settings file not found - make sure Command Palette is enabled in PowerToys Settings."
 }
 
 # -- 4. AutoHotkey v2 -------------------------------------------------------
@@ -130,39 +200,45 @@ if (Test-Path $ptSettingsPath) {
 Write-Step "Checking for AutoHotkey v2"
 
 function Find-AHKv2 {
-    $candidates = @(
-        (Join-Path $env:LOCALAPPDATA "Programs\AutoHotkey\v2\AutoHotkey64.exe"),
-        (Join-Path $env:LOCALAPPDATA "Programs\AutoHotkey\v2\AutoHotkey32.exe"),
-        (Join-Path $env:ProgramFiles "AutoHotkey\v2\AutoHotkey64.exe"),
-        (Join-Path $env:ProgramFiles "AutoHotkey\v2\AutoHotkey32.exe")
+    $roots = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\AutoHotkey\v2"),
+        (Join-Path $env:ProgramFiles "AutoHotkey\v2")
     )
     if (${env:ProgramFiles(x86)}) {
-        $candidates += (Join-Path ${env:ProgramFiles(x86)} "AutoHotkey\v2\AutoHotkey64.exe")
-        $candidates += (Join-Path ${env:ProgramFiles(x86)} "AutoHotkey\v2\AutoHotkey32.exe")
+        $roots += (Join-Path ${env:ProgramFiles(x86)} "AutoHotkey\v2")
     }
-    foreach ($c in $candidates) {
-        if (Test-Path $c) { return $c }
+    $exeNames = if ([Environment]::Is64BitOperatingSystem) {
+        @("AutoHotkey64.exe", "AutoHotkey32.exe")
+    } else {
+        @("AutoHotkey32.exe")
     }
-    $inPath = Get-Command AutoHotkey64.exe -ErrorAction SilentlyContinue
-    if ($inPath) { return $inPath.Source }
-    $inPath = Get-Command AutoHotkey32.exe -ErrorAction SilentlyContinue
-    if ($inPath) { return $inPath.Source }
+    foreach ($r in $roots) {
+        foreach ($n in $exeNames) {
+            $c = Join-Path $r $n
+            if (Test-Path $c) { return $c }
+        }
+    }
+    foreach ($n in $exeNames) {
+        $inPath = Get-Command $n -ErrorAction SilentlyContinue
+        if ($inPath) { return $inPath.Source }
+    }
     return $null
 }
 
 $ahkExe = Find-AHKv2
 
 if (-not $ahkExe) {
+    if (-not $hasWinget) {
+        Write-Error "AutoHotkey v2 is not installed and winget is not available. Install it from https://www.autohotkey.com/ and re-run."
+    }
     Write-Host "  Installing AutoHotkey v2 via winget..." -ForegroundColor Yellow
-    winget install --id AutoHotkey.AutoHotkey --accept-source-agreements --accept-package-agreements --silent
+    Invoke-Native { winget install --id AutoHotkey.AutoHotkey --exact --accept-source-agreements --accept-package-agreements --silent }
     if ($LASTEXITCODE -ne 0) {
         Write-Error "AutoHotkey installation failed (exit code $LASTEXITCODE). Try running this script as Administrator."
-        exit 1
     }
     $ahkExe = Find-AHKv2
     if (-not $ahkExe) {
         Write-Error "AutoHotkey v2 was installed but could not be found. Please check the installation and re-run."
-        exit 1
     }
     Write-OK "AutoHotkey v2 installed at: $ahkExe"
 } else {
@@ -178,64 +254,61 @@ $ahkScript  = Join-Path $scriptDir "PowerToys_StartSearch.ahk"
 
 if (-not (Test-Path $ahkScript)) {
     Write-Error "PowerToys_StartSearch.ahk not found in $scriptDir. Re-clone the repository."
-    exit 1
 }
 
-$validateProc = Start-Process -FilePath $ahkExe -ArgumentList "/validate `"$ahkScript`"" -PassThru -Wait -NoNewWindow
+$validateProc = Start-Process -FilePath $ahkExe -ArgumentList "/Validate `"$ahkScript`"" -PassThru -Wait
 if ($validateProc.ExitCode -ne 0) {
-    Write-Error "AHK script syntax validation failed."
-    exit 1
+    Write-Error "AHK script validation failed (exit code $($validateProc.ExitCode))."
 }
 Write-OK "PowerToys_StartSearch.ahk syntax OK"
 
-# -- 6. Read the CmdPal hotkey and sync the AHK script ----------------------
+# -- 6. Read the CmdPal hotkey and save it for the AHK script ---------------
 
 Write-Step "Detecting Command Palette hotkey"
 
-$cmdPalSettingsPath = $null
-$packagesDir = Join-Path $env:LOCALAPPDATA "Packages"
-if (Test-Path $packagesDir) {
-    $cmdPalPkg = Get-ChildItem $packagesDir -Directory |
-        Where-Object { $_.Name -like "Microsoft.CommandPalette*" } |
-        Select-Object -First 1
-    if ($cmdPalPkg) {
-        $cmdPalSettingsPath = Join-Path $cmdPalPkg.FullName "LocalState\settings.json"
-    }
-}
-
 $hotkeySendStr = "!#{Space}"   # default: Win + Alt + Space
 
-if ($cmdPalSettingsPath -and (Test-Path $cmdPalSettingsPath)) {
-    $cmdPalSettings = Get-Content $cmdPalSettingsPath -Raw | ConvertFrom-Json
-    $hk = $cmdPalSettings.Hotkey
+$hk = $null
+$packagesDir = Join-Path $env:LOCALAPPDATA "Packages"
+if (Test-Path $packagesDir) {
+    $cmdPalSettingsFiles = Get-ChildItem $packagesDir -Directory -Filter "Microsoft.CommandPalette*" -ErrorAction SilentlyContinue |
+        ForEach-Object { Join-Path $_.FullName "LocalState\settings.json" } |
+        Where-Object { Test-Path $_ }
 
-    $parts = ""
-    if ($hk.win)   { $parts += "#" }
-    if ($hk.alt)   { $parts += "!" }
-    if ($hk.ctrl)  { $parts += "^" }
-    if ($hk.shift) { $parts += "+" }
-
-    $vkMap = @{}
-    $vkMap[32] = "Space"; $vkMap[13] = "Enter"; $vkMap[9] = "Tab"; $vkMap[27] = "Escape"
-    for ($i = 65; $i -le 90; $i++) { $vkMap[$i] = [string][char]$i }
-    for ($i = 48; $i -le 57; $i++) { $vkMap[$i] = [string][char]$i }
-
-    if ($vkMap.ContainsKey([int]$hk.code)) {
-        $keyName = $vkMap[[int]$hk.code]
-        $hotkeySendStr = "$parts{$keyName}"
+    foreach ($f in @($cmdPalSettingsFiles)) {
+        try {
+            $hk = Get-Prop (Get-Content $f -Raw -Encoding UTF8 | ConvertFrom-Json) "Hotkey"
+            if ($hk) { break }
+        } catch {
+            Write-Warn "Could not read $f : $($_.Exception.Message)"
+        }
     }
-
-    Write-OK "CmdPal hotkey detected: $hotkeySendStr"
-} else {
-    Write-Warn "CmdPal settings not found - using default hotkey: $hotkeySendStr"
 }
 
-# Patch the AHK script to use the detected hotkey
-$ahkContent = Get-Content $ahkScript -Raw
-$newLine = "    SendInput `"$hotkeySendStr`""
-$ahkContent = $ahkContent -replace '    SendInput ".*" ; CmdPal hotkey -- patched by Setup\.ps1', "$newLine ; CmdPal hotkey -- patched by Setup.ps1"
-Set-Content $ahkScript -Value $ahkContent -NoNewline -Encoding UTF8
-Write-OK "AHK script synced with CmdPal hotkey"
+$code = Get-Prop $hk "code"
+if ($code) {
+    $code = [int]$code
+    $parts = ""
+    if (Get-Prop $hk "win")   { $parts += "#" }
+    if (Get-Prop $hk "alt")   { $parts += "!" }
+    if (Get-Prop $hk "ctrl")  { $parts += "^" }
+    if (Get-Prop $hk "shift") { $parts += "+" }
+
+    if     ($code -eq 32)                     { $keyName = "Space" }
+    elseif ($code -ge 65 -and $code -le 90)   { $keyName = [string][char]$code }
+    elseif ($code -ge 48 -and $code -le 57)   { $keyName = [string][char]$code }
+    elseif ($code -ge 112 -and $code -le 135) { $keyName = "F$($code - 111)" }
+    else                                      { $keyName = "vk{0:X2}" -f $code }
+
+    $hotkeySendStr = "$parts{$keyName}"
+    Write-OK "CmdPal hotkey detected: $hotkeySendStr"
+} else {
+    Write-Warn "CmdPal hotkey not found in its settings - using default Win+Alt+Space ($hotkeySendStr)"
+}
+
+$iniPath = Join-Path $scriptDir "settings.ini"
+Write-Utf8NoBom -Path $iniPath -Text "[CmdPal]`r`nHotkey=$hotkeySendStr`r`n"
+Write-OK "Saved hotkey to $iniPath"
 
 # -- 7. Register startup shortcut -------------------------------------------
 
@@ -266,23 +339,16 @@ if (Test-Path $oldShortcut) {
 if (-not $SkipLaunch) {
     Write-Step "Launching CmdPal Start Search"
 
-    # Stop any existing instances
-    $existing = Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like "*PowerToys_StartSearch.ahk*" }
-    foreach ($proc in $existing) {
-        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
-    }
+    # #SingleInstance Force in the script replaces any running copy, so a
+    # plain launch also picks up the new settings.
+    Start-Process -FilePath $ahkExe -ArgumentList "`"$ahkScript`"" -WorkingDirectory $scriptDir
 
-    Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-        CommandLine = "`"$ahkExe`" `"$ahkScript`""
-    } | Out-Null
+    Start-Sleep -Seconds 1
+    $running = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*PowerToys_StartSearch.ahk*" })
 
-    Start-Sleep -Milliseconds 500
-    $running = Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like "*PowerToys_StartSearch.ahk*" }
-
-    if ($running) {
-        Write-OK "Running! (PID $($running.ProcessId))"
+    if ($running.Count -gt 0) {
+        Write-OK "Running! (PID $($running[0].ProcessId))"
     } else {
         Write-Warn "Process started but may have exited. Check the system tray."
     }

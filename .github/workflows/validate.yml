@@ -13,29 +13,37 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Validate PowerShell scripts (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $failed = $false
+          foreach ($s in Get-ChildItem -Filter *.ps1) {
+              $tokens = $null; $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile($s.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+              if ($errors) {
+                  $errors | ForEach-Object { Write-Host "$($s.Name):$($_.Extent.StartLineNumber): $($_.Message)" }
+                  $failed = $true
+              } else {
+                  Write-Host "OK: $($s.Name)"
+              }
+          }
+          if ($failed) { exit 1 }
+
       - name: Install AutoHotkey v2
-        run: |
-          winget install --id AutoHotkey.AutoHotkey --accept-source-agreements --accept-package-agreements --silent
-
-      - name: Validate PowerShell Scripts
         shell: pwsh
         run: |
-          $scripts = @("Setup.ps1", "Uninstall.ps1")
-          foreach ($s in $scripts) {
-              $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content $s -Raw), [ref]$null)
-              Write-Host "✓ $s syntax OK"
-          }
+          $zip = Join-Path $env:RUNNER_TEMP "ahk.zip"
+          Invoke-WebRequest "https://www.autohotkey.com/download/ahk-v2.zip" -OutFile $zip
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "ahk")
 
-      - name: Validate AutoHotkey Script
+      - name: Validate AutoHotkey script
         shell: pwsh
         run: |
-          $ahk = "C:\Users\runneradmin\AppData\Local\Programs\AutoHotkey\v2\AutoHotkey64.exe"
-          if (-not (Test-Path $ahk)) {
-              $ahk = "C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe"
-          }
-          & $ahk /validate "PowerToys_StartSearch.ahk"
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "AHK validation failed"
+          $ahk = Join-Path $env:RUNNER_TEMP "ahk\AutoHotkey64.exe"
+          $p = Start-Process -FilePath $ahk -ArgumentList '/ErrorStdOut /Validate "PowerToys_StartSearch.ahk"' -Wait -PassThru -NoNewWindow -RedirectStandardError ahk-errors.txt
+          Get-Content ahk-errors.txt -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) {
+              Write-Error "AHK validation failed (exit code $($p.ExitCode))"
               exit 1
           }
-          Write-Host "✓ PowerToys_StartSearch.ahk syntax OK"
+          Write-Host "OK: PowerToys_StartSearch.ahk"
