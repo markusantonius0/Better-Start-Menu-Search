@@ -2,40 +2,179 @@ name: Validate Scripts
 
 on:
   push:
-    branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   validate:
+    name: Syntax and unit tests
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install AutoHotkey v2
+      - name: Validate PowerShell scripts (Windows PowerShell 5.1)
+        shell: powershell
         run: |
-          winget install --id AutoHotkey.AutoHotkey --accept-source-agreements --accept-package-agreements --silent
+          $failed = $false
+          foreach ($s in Get-ChildItem -Filter *.ps1) {
+              $tokens = $null; $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile($s.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+              if ($errors) {
+                  $errors | ForEach-Object { Write-Host "$($s.Name):$($_.Extent.StartLineNumber): $($_.Message)" }
+                  $failed = $true
+              } else {
+                  Write-Host "OK: $($s.Name)"
+              }
+          }
+          if ($failed) { exit 1 }
 
-      - name: Validate PowerShell Scripts
+      - name: Download AutoHotkey v2
         shell: pwsh
         run: |
-          $scripts = @("Setup.ps1", "Uninstall.ps1")
-          foreach ($s in $scripts) {
-              $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content $s -Raw), [ref]$null)
-              Write-Host "✓ $s syntax OK"
-          }
+          $zip = Join-Path $env:RUNNER_TEMP "ahk.zip"
+          # GitHub release (autohotkey.com serves a bot challenge to CI runners)
+          Invoke-WebRequest "https://github.com/AutoHotkey/AutoHotkey/releases/download/v2.0.19/AutoHotkey_2.0.19.zip" -OutFile $zip
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "ahk")
 
-      - name: Validate AutoHotkey Script
+      - name: Validate AutoHotkey script
         shell: pwsh
         run: |
-          $ahk = "C:\Users\runneradmin\AppData\Local\Programs\AutoHotkey\v2\AutoHotkey64.exe"
-          if (-not (Test-Path $ahk)) {
-              $ahk = "C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe"
+          $ahk = Join-Path $env:RUNNER_TEMP "ahk\AutoHotkey64.exe"
+          $p = Start-Process -FilePath $ahk -ArgumentList '/ErrorStdOut /Validate "PowerToys_StartSearch.ahk"' -Wait -PassThru -NoNewWindow -RedirectStandardError ahk-errors.txt
+          Get-Content ahk-errors.txt -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "AHK validation failed (exit code $($p.ExitCode))" }
+          Write-Host "OK: PowerToys_StartSearch.ahk"
+
+      - name: Run AutoHotkey runtime tests
+        shell: pwsh
+        run: |
+          $ahk = Join-Path $env:RUNNER_TEMP "ahk\AutoHotkey64.exe"
+          $p = Start-Process -FilePath $ahk -ArgumentList '/ErrorStdOut "tests\Test-Interceptor.ahk"' -Wait -PassThru -NoNewWindow `
+              -RedirectStandardOutput test-out.txt -RedirectStandardError test-err.txt
+          Get-Content test-out.txt, test-err.txt -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "AHK runtime tests failed (exit code $($p.ExitCode))" }
+
+  installer:
+    name: Installer end-to-end (silent install like WinGet)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress --yes
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:GITHUB_WORKSPACE "dist"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & iscc "/DMyAppVersion=0.0.0" "/O$out" "installer\CmdPalStartSearch.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Generate and validate WinGet manifests
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist\BetterStartMenuSearch-Setup-*.exe | Select-Object -First 1
+          .\winget\New-WingetManifests.ps1 -Version 0.0.0 -InstallerPath $exe.FullName
+          $dir = "winget\manifests\m\MarkusAntonius0\BetterStartMenuSearch\0.0.0"
+          Get-ChildItem $dir | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName }
+          Write-Host "winget client: $(winget --version)"
+          winget validate --manifest $dir --disable-interactivity
+          # 0x8A150028 = "validation succeeded with warnings". An older winget on
+          # the runner may not recognize the newest schema header URL yet.
+          if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335192) { throw "winget validate failed ($LASTEXITCODE)" }
+          exit 0  # don't let the runner propagate the "warnings" exit code
+
+      - name: Silent install (WinGet switches)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist\BetterStartMenuSearch-Setup-*.exe | Select-Object -First 1
+          $log = Join-Path $env:RUNNER_TEMP "inno-install.log"
+          # Wait for the installer process only (like WinGet does). Start-Process -Wait
+          # would also wait for AutoHotkey/PowerToys, which keep running by design.
+          $p = Start-Process $exe.FullName -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /LOG=`"$log`"" -PassThru
+          $null = $p.Handle  # needed for ExitCode to be populated
+          $p.WaitForExit()
+          Write-Host "Installer exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Get-Content $log; throw "Installer failed" }
+
+      - name: Show Setup.ps1 log
+        if: always()
+        shell: pwsh
+        run: Get-Content (Join-Path $env:TEMP "CmdPalStartSearch-Setup.log") -ErrorAction SilentlyContinue
+
+      - name: Verify installation
+        shell: pwsh
+        run: |
+          $failed = 0
+          function Check($ok, $name) {
+              if ($ok) { Write-Host "PASS  $name" } else { Write-Host "FAIL  $name"; $script:failed++ }
           }
-          & $ahk /validate "PowerToys_StartSearch.ahk"
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "AHK validation failed"
-              exit 1
+          $app = Join-Path $env:LOCALAPPDATA "Programs\CmdPalStartSearch"
+          Check (Test-Path "$app\PowerToys_StartSearch.ahk") "script installed to $app"
+          Check (Test-Path "$app\settings.ini") "settings.ini written by Setup.ps1"
+          if (Test-Path "$app\settings.ini") { Get-Content "$app\settings.ini" }
+
+          $startup = [Environment]::GetFolderPath("Startup")
+          Check (Test-Path "$startup\CmdPalStartSearch.lnk") "startup shortcut created"
+
+          $ahkProc = Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%.exe'" |
+              Where-Object { $_.CommandLine -like "*PowerToys_StartSearch.ahk*" }
+          Check ($null -ne $ahkProc) "interceptor is running"
+
+          $pt = Get-Process PowerToys -ErrorAction SilentlyContinue
+          Check ($null -ne $pt) "PowerToys is running"
+
+          $ptSettings = Join-Path $env:LOCALAPPDATA "Microsoft\PowerToys\settings.json"
+          if (Test-Path $ptSettings) {
+              $s = Get-Content $ptSettings -Raw | ConvertFrom-Json
+              Check ($s.enabled.CmdPal -eq $true) "Command Palette enabled in PowerToys settings"
+          } else {
+              Check $false "PowerToys settings.json exists"
           }
-          Write-Host "✓ PowerToys_StartSearch.ahk syntax OK"
+          if ($failed) { exit 1 }
+
+      - name: End-to-end Start Menu handoff
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          # Give PowerToys time to start Command Palette
+          for ($i = 0; $i -lt 60 -and -not (Get-Process Microsoft.CmdPal.UI -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
+          Get-Process Microsoft.CmdPal.UI, PowerToys -ErrorAction SilentlyContinue | Format-Table Name, Id, Path
+          $ahk = (Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%.exe'" | Select-Object -First 1).ExecutablePath
+          $p = Start-Process -FilePath $ahk -ArgumentList '/ErrorStdOut "tests\Test-StartMenuHandoff.ahk"' -PassThru -NoNewWindow `
+              -RedirectStandardOutput e2e-out.txt -RedirectStandardError e2e-err.txt
+          $null = $p.Handle  # needed for ExitCode to be populated
+          $p.WaitForExit()
+          Get-Content e2e-out.txt, e2e-err.txt -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "End-to-end handoff failed (exit code $($p.ExitCode))" }
+
+      - name: Silent uninstall
+        shell: pwsh
+        run: |
+          $app = Join-Path $env:LOCALAPPDATA "Programs\CmdPalStartSearch"
+          (Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -PassThru).WaitForExit()
+          # The Inno uninstaller re-launches itself from %TEMP%; wait for it to finish
+          for ($i = 0; $i -lt 60 -and (Test-Path $app); $i++) { Start-Sleep 1 }
+
+      - name: Verify uninstall
+        shell: pwsh
+        run: |
+          $failed = 0
+          function Check($ok, $name) {
+              if ($ok) { Write-Host "PASS  $name" } else { Write-Host "FAIL  $name"; $script:failed++ }
+          }
+          $app = Join-Path $env:LOCALAPPDATA "Programs\CmdPalStartSearch"
+          Check (-not (Test-Path $app)) "install folder removed"
+          if (Test-Path $app) { Get-ChildItem $app -Recurse | Format-Table FullName }
+          $startup = [Environment]::GetFolderPath("Startup")
+          Check (-not (Test-Path "$startup\CmdPalStartSearch.lnk")) "startup shortcut removed"
+          $ahkProc = Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%.exe'" |
+              Where-Object { $_.CommandLine -like "*PowerToys_StartSearch.ahk*" }
+          Check ($null -eq $ahkProc) "interceptor stopped"
+          if ($failed) { exit 1 }

@@ -22,6 +22,15 @@ Press the **Windows key** to open the Start Menu like normal. The moment you **s
 
 ## Quick Start
 
+### WinGet (after package publication)
+The installer is being prepared for publication to the WinGet community repository. Once the manifest is accepted, install it with:
+
+```powershell
+winget install --id MarkusAntonius0.BetterStartMenuSearch --exact
+```
+
+Until then, use one of the manual installation options below.
+
 ### Option A: Double-Click (Easiest)
 Download or clone the repository, then simply double-click **`Setup.bat`**.
 
@@ -42,7 +51,7 @@ The installer will:
 3. ✅ Enable **Command Palette** in PowerToys settings
 4. ✅ Disable legacy **PowerToys Run** (avoids hotkey conflicts)
 5. ✅ Install **AutoHotkey v2** if missing (via winget)
-6. ✅ Detect your Command Palette hotkey and sync the script
+6. ✅ Detect your Command Palette hotkey and save it to `settings.ini`
 7. ✅ Register a **startup shortcut** so it runs on every login
 8. ✅ Launch immediately
 
@@ -56,6 +65,26 @@ powershell -ExecutionPolicy Bypass -File Uninstall.ps1
 
 This stops the background script and removes the startup shortcut. PowerToys and AutoHotkey are **not** uninstalled. Run `Setup.ps1` again at any time to re-enable.
 
+When installed through WinGet, the package uninstaller stops the integration and removes its startup shortcut and installed files. It does not uninstall PowerToys or AutoHotkey.
+
+## Building a release installer
+
+The Inno Setup installer installs per-user under `%LOCALAPPDATA%\Programs\CmdPalStartSearch`, then runs `Setup.ps1` to configure and launch the integration. It supports Inno Setup's silent switches used by WinGet (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-`). Uninstalling runs `Uninstall.ps1` before removing the installed files. The existing manual setup and uninstall scripts remain available.
+
+To publish a versioned installer, merge the installer changes and push a `vMAJOR.MINOR.PATCH` tag (for example, `v1.0.0`). The release workflow builds and attaches `BetterStartMenuSearch-Setup-MAJOR.MINOR.PATCH.exe` to the GitHub release. For `v1.0.0`, the stable download URL will be:
+
+`https://github.com/markusantonius0/Better-Start-Menu-Search/releases/download/v1.0.0/BetterStartMenuSearch-Setup-1.0.0.exe`
+
+To submit to WinGet after publishing a release (for example `v1.0.1`):
+
+```powershell
+.\winget\New-WingetManifests.ps1 -Version 1.0.1      # downloads the asset, hashes it, writes manifests
+winget validate --manifest .\winget\manifests\m\MarkusAntonius0\BetterStartMenuSearch\1.0.1
+winget install  --manifest .\winget\manifests\m\MarkusAntonius0\BetterStartMenuSearch\1.0.1   # optional local test
+```
+
+Copy that `manifests\m\MarkusAntonius0\BetterStartMenuSearch\1.0.1` folder to the same path in your fork of `microsoft/winget-pkgs` and open a pull request. The generated manifests include the schema headers winget-pkgs requires, declare PowerToys and AutoHotkey as dependencies, and set the installer's ProductCode. CI builds the installer, validates these manifests, and runs a full silent install → Start Menu typing test → uninstall on every push.
+
 ## How It Works
 
 A lightweight [AutoHotkey v2](https://www.autohotkey.com/) script runs in the background (~3 MB RAM) and watches for keyboard input while the Windows Start Menu or Search Host has focus:
@@ -64,7 +93,7 @@ A lightweight [AutoHotkey v2](https://www.autohotkey.com/) script runs in the ba
 User presses Win          → Start Menu opens normally
 User types a character    → AHK intercepts the keystroke
                           → Sends Escape to dismiss Start Menu
-                          → Sends Win+Alt+Space to open Command Palette
+                          → Sends your CmdPal hotkey (default Win+Alt+Space)
                           → Buffers any fast-typed characters during the switch
                           → Sends all buffered text into CmdPal's search box
 ```
@@ -98,9 +127,13 @@ All prerequisites are installed automatically by `Setup.ps1` via [winget](https:
 | `Setup.ps1` | One-click installer (prerequisites + startup + launch) |
 | `Uninstall.bat` | Double-click launcher for `Uninstall.ps1` |
 | `Uninstall.ps1` | Stops the script and removes the startup shortcut |
+| `settings.ini` | Created by `Setup.ps1`: your Command Palette hotkey (not committed) |
+| `installer/CmdPalStartSearch.iss` | Per-user Inno Setup package definition for WinGet |
 | `LICENSE` | MIT License |
 | `.gitignore` | Ignores temporary and local workspace files |
-| `.github/workflows/validate.yml` | GitHub Actions CI for automated script validation |
+| `.github/workflows/validate.yml` | CI: syntax checks, AHK runtime tests, and a silent install/uninstall end-to-end test |
+| `tests/` | AutoHotkey test scripts run by CI |
+| `.github/workflows/release.yml` | Builds and attaches versioned installers to tagged GitHub releases |
 
 ## FAQ
 
@@ -111,7 +144,10 @@ No. It's a user-space script that intercepts keystrokes only when the Start Menu
 No. The hotkeys are context-sensitive — they only activate when the Start Menu or Windows Search is the active window.
 
 **Q: What if I change my Command Palette hotkey?**
-Re-run `Setup.ps1` — it reads your CmdPal settings and patches the script automatically.
+Re-run `Setup.ps1` — it reads your CmdPal settings and writes the hotkey to `settings.ini`, which the script reads at startup.
+
+**Q: I typed in Start but nothing happened / Windows Search opened instead.**
+Command Palette didn't open in time. Make sure PowerToys is running and Command Palette is enabled (PowerToys Settings → Command Palette), then re-run `Setup.ps1` so the script uses your current CmdPal hotkey. When this happens the script shows a notification and passes your text to Windows Search, so no keystrokes are lost.
 
 **Q: Does it work with the Win key held for other shortcuts?**
 Yes. Only single keypresses while the Start Menu is open are intercepted. Holding `Win` and pressing `E`, `D`, `L`, etc. works exactly as before.
