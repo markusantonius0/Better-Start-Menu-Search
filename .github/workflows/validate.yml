@@ -98,6 +98,7 @@ jobs:
           # Wait for the installer process only (like WinGet does). Start-Process -Wait
           # would also wait for AutoHotkey/PowerToys, which keep running by design.
           $p = Start-Process $exe.FullName -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /LOG=`"$log`"" -PassThru
+          $null = $p.Handle  # needed for ExitCode to be populated
           $p.WaitForExit()
           Write-Host "Installer exit code: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { Get-Content $log; throw "Installer failed" }
@@ -148,6 +149,7 @@ jobs:
           $ahk = (Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%.exe'" | Select-Object -First 1).ExecutablePath
           $p = Start-Process -FilePath $ahk -ArgumentList '/ErrorStdOut "tests\Test-StartMenuHandoff.ahk"' -PassThru -NoNewWindow `
               -RedirectStandardOutput e2e-out.txt -RedirectStandardError e2e-err.txt
+          $null = $p.Handle  # needed for ExitCode to be populated
           $p.WaitForExit()
           Get-Content e2e-out.txt, e2e-err.txt -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { throw "End-to-end handoff failed (exit code $($p.ExitCode))" }
