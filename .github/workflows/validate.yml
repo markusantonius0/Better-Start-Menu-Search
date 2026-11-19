@@ -83,8 +83,11 @@ jobs:
           .\winget\New-WingetManifests.ps1 -Version 0.0.0 -InstallerPath $exe.FullName
           $dir = "winget\manifests\m\MarkusAntonius0\BetterStartMenuSearch\0.0.0"
           Get-ChildItem $dir | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName }
+          Write-Host "winget client: $(winget --version)"
           winget validate --manifest $dir --disable-interactivity
-          if ($LASTEXITCODE -ne 0) { throw "winget validate failed ($LASTEXITCODE)" }
+          # 0x8A150028 = "validation succeeded with warnings". An older winget on
+          # the runner may not recognize the newest schema header URL yet.
+          if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335192) { throw "winget validate failed ($LASTEXITCODE)" }
 
       - name: Silent install (WinGet switches)
         shell: pwsh
