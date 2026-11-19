@@ -75,7 +75,15 @@ To publish a versioned installer, merge the installer changes and push a `vMAJOR
 
 `https://github.com/markusantonius0/Better-Start-Menu-Search/releases/download/v1.0.0/BetterStartMenuSearch-Setup-1.0.0.exe`
 
-Before submitting the WinGet manifest, download that exact asset and calculate its SHA-256 with `Get-FileHash .\BetterStartMenuSearch-Setup-1.0.0.exe -Algorithm SHA256`. Use the release URL and hash in an `Inno` installer manifest, then submit it to `microsoft/winget-pkgs`. The package ID above is the proposed manifest identifier.
+To submit to WinGet after publishing a release (for example `v1.0.1`):
+
+```powershell
+.\winget\New-WingetManifests.ps1 -Version 1.0.1      # downloads the asset, hashes it, writes manifests
+winget validate --manifest .\winget\manifests\m\MarkusAntonius0\BetterStartMenuSearch\1.0.1
+winget install  --manifest .\winget\manifests\m\MarkusAntonius0\BetterStartMenuSearch\1.0.1   # optional local test
+```
+
+Copy that `manifests\m\MarkusAntonius0\BetterStartMenuSearch\1.0.1` folder to the same path in your fork of `microsoft/winget-pkgs` and open a pull request. The generated manifests include the schema headers winget-pkgs requires, declare PowerToys and AutoHotkey as dependencies, and set the installer's ProductCode. CI builds the installer, validates these manifests, and runs a full silent install → Start Menu typing test → uninstall on every push.
 
 ## How It Works
 
