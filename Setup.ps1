@@ -27,6 +27,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference    = "SilentlyContinue"
 
+# Keep a log: when run by the installer (or WinGet) this script is hidden.
+$logPath = Join-Path $env:TEMP "CmdPalStartSearch-Setup.log"
+try { Start-Transcript -Path $logPath -Force | Out-Null } catch { }
+
 # -- Helpers -----------------------------------------------------------------
 
 function Write-Step  { param([string]$msg) Write-Host "`n> $msg" -ForegroundColor Cyan }
@@ -256,7 +260,9 @@ if (-not (Test-Path $ahkScript)) {
     Write-Error "PowerToys_StartSearch.ahk not found in $scriptDir. Re-clone the repository."
 }
 
-$validateProc = Start-Process -FilePath $ahkExe -ArgumentList "/Validate `"$ahkScript`"" -PassThru -Wait
+# /ErrorStdOut prints errors to the console instead of a message box, which
+# would otherwise block a silent (WinGet / installer) run forever.
+$validateProc = Start-Process -FilePath $ahkExe -ArgumentList "/ErrorStdOut /Validate `"$ahkScript`"" -PassThru -Wait -NoNewWindow
 if ($validateProc.ExitCode -ne 0) {
     Write-Error "AHK script validation failed (exit code $($validateProc.ExitCode))."
 }
@@ -361,3 +367,5 @@ Write-Host "  Setup complete!" -ForegroundColor Green
 Write-Host "  Press Win -> start typing -> Command Palette takes over." -ForegroundColor White
 Write-Host "  Look for the green H icon in your system tray." -ForegroundColor White
 Write-Host ""
+
+try { Stop-Transcript | Out-Null } catch { }

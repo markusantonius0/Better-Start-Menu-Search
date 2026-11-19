@@ -23,3 +23,4 @@ scratch/
 
 # Local settings written by Setup.ps1
 settings.ini
+dist/
